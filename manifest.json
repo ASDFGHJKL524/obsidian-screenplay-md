@@ -1,0 +1,10 @@
+{
+  "id": "screenplay-md",
+  "name": "Screenplay MD",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Screenplay writing workflow for Markdown notes: Tab cycles line types, screenplay layout, import/export.",
+  "author": "qing和天阙",
+  "authorUrl": "",
+  "isDesktopOnly": true
+}

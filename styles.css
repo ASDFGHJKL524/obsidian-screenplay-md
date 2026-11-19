@@ -1,0 +1,163 @@
+/* 剧本助手 · 版式
+   编辑视图里只允许：字号、字重、水平 padding、背景色。
+   禁止：margin（行高换算会崩）、text-align / text-indent（点击定位错位）、
+        border 宽度（占位会挪动文字）。
+
+   场景头 = H2（正文字号、加粗、淡灰底纹）
+   角色   = H4（padding 推偏中）
+   括号   = H5（斜体、padding 推偏中）
+   台词   = 引用块（去掉主题底色，只留缩进） */
+
+/* 行首标记（#、> 等）在编辑器里本来就带 .cm-formatting-* 类。
+   字号设 0 + 透明 = 看不见也不占宽，且不改文档结构，
+   所以不会像装饰那样把点击定位带偏。 */
+.markdown-source-view.mod-cm6 .cm-formatting-header,
+.markdown-source-view.mod-cm6 .cm-formatting-header-1,
+.markdown-source-view.mod-cm6 .cm-formatting-header-2,
+.markdown-source-view.mod-cm6 .cm-formatting-header-3,
+.markdown-source-view.mod-cm6 .cm-formatting-header-4,
+.markdown-source-view.mod-cm6 .cm-formatting-header-5,
+.markdown-source-view.mod-cm6 .cm-formatting-header-6,
+.markdown-source-view.mod-cm6 .cm-formatting-quote,
+.markdown-source-view.mod-cm6 .cm-formatting-quote-1 {
+  font-size: 0 !important;
+  line-height: 0 !important;
+  opacity: 0 !important;
+  letter-spacing: 0 !important;
+}
+/* ---------- 编辑视图（Live Preview） ---------- */
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-header-2 {
+  font-size: 1em !important;
+  font-weight: 700 !important;
+  background: var(--background-secondary) !important;
+  padding-left: 0.4em !important;
+  padding-right: 0.4em !important;
+  border-radius: 3px;
+}
+
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-header-6 {
+  font-size: 1em !important;
+  font-weight: 700 !important;
+  padding-left: 0 !important;
+}
+
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-header-4 {
+  font-size: 1em !important;
+  font-weight: 600 !important;
+  padding-left: 33% !important;
+}
+
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-header-5 {
+  font-size: 1em !important;
+  font-weight: 400 !important;
+  font-style: italic !important;
+  padding-left: 26% !important;
+  opacity: 0.85;
+}
+
+/* 台词：去掉底纹和竖线；边框保留占位（改颜色不改宽度，避免文字位移） */
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-quote,
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-quote-1 {
+  background: transparent !important;
+  border-color: transparent !important;
+  border-inline-start-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-quote::before,
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-quote::after {
+  display: none !important;
+}
+
+.markdown-source-view.mod-cm6 .cm-quote,
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-quote .cm-quote {
+  background: transparent !important;
+  color: inherit !important;
+  font-style: normal !important;
+}
+
+/* ---------- 阅读视图（可以安全居中、可以加间距） ---------- */
+.markdown-preview-view h2,
+.markdown-reading-view h2 {
+  font-size: 1em;
+  font-weight: 700;
+  margin: 1.4em 0 0.3em;
+  padding: 0.1em 0.5em;
+  border: none;
+  background: var(--background-secondary);
+  border-radius: 3px;
+}
+
+.markdown-preview-view h6,
+.markdown-reading-view h6 {
+  font-size: 1em;
+  font-weight: 700;
+  margin: 0.6em 0 0.2em;
+  padding: 0;
+}
+
+.markdown-preview-view h4,
+.markdown-reading-view h4 {
+  font-size: 1em;
+  font-weight: 600;
+  text-align: center;
+  margin: 0.8em 0 0.05em;
+  padding: 0;
+}
+
+.markdown-preview-view h5,
+.markdown-reading-view h5 {
+  font-size: 1em;
+  font-weight: 400;
+  font-style: italic;
+  text-align: center;
+  margin: 0.05em 0;
+  padding: 0;
+  opacity: 0.85;
+}
+
+.markdown-preview-view blockquote,
+.markdown-reading-view blockquote {
+  margin: 0.1em 0;
+  padding-left: 2.2em;
+  border: none;
+  background: transparent;
+  font-style: normal;
+  color: inherit;
+}
+
+/* 悬浮角标：显示当前行类型，点一下切下一种 */
+.script-zh-badge {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 100;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--background-secondary-alt, var(--background-secondary));
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.7;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+  opacity: 0.95;
+  transition: opacity 180ms ease;
+}
+.script-zh-badge:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.script-zh-badge.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* 镜头（三级标题） */
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-header-3 {
+  font-size: 1em !important;
+  font-weight: 700 !important;
+  padding-left: 0 !important;
+}
