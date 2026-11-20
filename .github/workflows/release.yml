@@ -1,0 +1,45 @@
+name: release
+
+# 规则（见仓库约定）：manifest.json 的 version 就是发布号，
+# tag 必须与它完全一致；推 main 之后这里负责把 Release 建出来并挂三件套。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read manifest version
+        id: manifest
+        run: echo "version=$(jq -r .version manifest.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure tag exists at HEAD
+        env:
+          V: ${{ steps.manifest.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/$V" >/dev/null; then
+            echo "tag $V already points somewhere; leaving it alone"
+          else
+            git tag -a "$V" -m "$V"
+            git push origin "$V"
+          fi
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.manifest.outputs.version }}
+          name: Screenplay MD ${{ steps.manifest.outputs.version }}
+          files: |
+            main.js
+            manifest.json
+            styles.css
+          generate_release_notes: true
