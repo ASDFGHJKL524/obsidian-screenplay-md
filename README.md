@@ -21,10 +21,10 @@ stay consistent, and the structure survives export to Word / PDF / HTML.
 |---|---|---|
 | Scene | `## 1. INT. STUDIO - MORNING` | bold, tinted band, auto scene number |
 | Shot | `### description` | bold |
-| Action | `###### description` | bold |
+| Action | `###### description` | body text |
 | Character | `#### NAME` | bold, pushed right |
-| Parenthetical | `##### (beat)` | italic, pushed right |
-| Dialogue | `> line of dialogue` | blockquote, indent only |
+| Parenthetical | `##### （beat）` | italic, pushed right, wrapped in full-width parentheses |
+| Dialogue | `> “line of dialogue”` | blockquote, indented, wrapped in quotation marks |
 
 ## Usage
 
@@ -35,7 +35,9 @@ stay consistent, and the structure survives export to Word / PDF / HTML.
   became (Scene / Shot / Action / Character / Dialogue / Parenthetical) and fades after two seconds
   (or as soon as you type)
 - Hover any line: the same badge follows the pointer and shows that line's type
-- Only one badge is ever visible: the most recent action (Tab or hover) owns it
+- Click anywhere: the badge shows at the caret for one second. Only changes caused by a mouse
+  click count — typing, switching notes or programmatic selection never raise it
+- Only one badge is ever visible: the most recent action (Tab, hover or click) owns it
 
 ## Language
 
@@ -82,6 +84,11 @@ Add this repository through BRAT while the plugin is not in the community catalo
 UI ships in English and Chinese, auto-following the Obsidian interface language. Both
 dictionaries are checked for key parity, placeholder parity and stray CJK in the English
 strings. The English UI has not been eyeballed in-app yet — reports welcome.
+
+## Changelog
+
+Per-version notes live in [RELEASE_NOTES.md](RELEASE_NOTES.md); earlier versions are on the
+releases page.
 
 ## License
 

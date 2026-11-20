@@ -148,7 +148,6 @@ const TYPES = {
 };
 const typeLabel = (id) => (id && TYPES[id] ? t('type.' + TYPES[id].key) : t('type.action'));
 const ORDER = ['scene', 'shot', 'action', 'character', 'dialogue', 'paren'];
-// Set this in the plugin settings; paths differ per system, so nothing is preset.
 const DEFAULT_PANDOC = '';
 
 // 去掉行首已有的剧本标记
@@ -161,6 +160,8 @@ function stripMark(text) {
   body = body.replace(/^\s*##\s+/, '');
   body = body.replace(/^\s*>\s?/, '');
   body = body.replace(/^[\u3000\s]+/, '');
+  // 剥掉 applyType() 在空行上补的零宽空格，别让它混进正文或导出文件
+  body = body.replace(/\u200B/g, '');
   const m = body.match(/^\*\((.*)\)\*$/);
   if (m) body = m[1];
   return body;
@@ -294,11 +295,21 @@ module.exports = class ScriptZhPlugin extends Plugin {
     this.hideTimer = null;
     this.mouseMs = 1200;
     this.caretMs = 2000;
+    this.clickMs = 1000;          // 点击定位后，气泡跟着插入点显示多久
+    this.lastPointerDown = 0;     // 最近一次按下指针的时间：用来区分"点击"和"打字/程序改选"
+    this.lastDownX = -1;
+    this.lastDownY = -1;
     this.onMouseMove = (e) => this.hoverUpdate(e);
     this.onKeyDown = (e) => this.onAnyKeyDown(e);
     this.onResize = () => this.hideBadge();
+    this.onPointerDown = (e) => {
+      this.lastPointerDown = Date.now();
+      this.lastDownX = e.clientX;
+      this.lastDownY = e.clientY;
+    };
     document.addEventListener('mousemove', this.onMouseMove, { passive: true });
     document.addEventListener('keydown', this.onKeyDown, true);
+    document.addEventListener('pointerdown', this.onPointerDown, true);
     window.addEventListener('resize', this.onResize);
 
     // Tab / Shift+Tab 换类型
@@ -318,6 +329,22 @@ module.exports = class ScriptZhPlugin extends Plugin {
       this.app.scope.register([], 'Tab', () => { if (!self.getEditor()) return false; self.cycle(1); return true; });
       this.app.scope.register([], 'Shift-Tab', () => { if (!self.getEditor()) return false; self.cycle(-1); return true; });
     }
+
+    // 点击把光标放到某一行后：跟着插入点把「这行是什么类型」报出来（默认 1 秒）。
+    // 只认鼠标点击引起的选择变化 —— 打字、切文件、程序改选都不弹。
+    try {
+      const { EditorView } = require('@codemirror/view');
+      const self = this;
+      this.registerEditorExtension(EditorView.updateListener.of((u) => {
+        if (!u.selectionSet) return;
+        if (Date.now() - self.lastPointerDown > 500) return;
+        const head = u.state.selection.main.head;
+        const line = u.state.doc.lineAt(head);
+        const body = line.text.replace(/\u200B/g, '').trim();
+        const label = !body ? t('type.blank') : typeLabel(detectType(line.text));
+        self.showCaretBadgeLabel(label, self.clickMs);
+      }));
+    } catch (e) { console.warn('[script-zh] updateListener 不可用', e); }
 
 
 
@@ -343,6 +370,7 @@ module.exports = class ScriptZhPlugin extends Plugin {
   onunload() {
     if (this.onMouseMove) document.removeEventListener('mousemove', this.onMouseMove);
     if (this.onKeyDown) document.removeEventListener('keydown', this.onKeyDown, true);
+    if (this.onPointerDown) document.removeEventListener('pointerdown', this.onPointerDown, true);
     if (this.onResize) window.removeEventListener('resize', this.onResize);
     if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.badge) this.badge.remove();
@@ -373,28 +401,42 @@ module.exports = class ScriptZhPlugin extends Plugin {
     const cur = editor.getCursor();
     const line = cur.line;
     const text = editor.getLine(line);
+    // 先剥行首标记，再剥掉可能已经存在的包装符（引号 / 括号），
+    // 否则来回切几次会越包越多：““台词””
     let body = stripMark(text).trim();
-
-    let newLine = '###### ' + body;
+    body = body.replace(/^[“”"'‘’]+/, '').replace(/[“”"'‘’]+$/, '').trim();
+    body = body.replace(/^[（(]+/, '').replace(/[）)]+$/, '').trim();
     // 离开场景类型时，把场次编号一并去掉（否则会残留成 "2. B"）
     if (type !== 'scene') body = body.replace(/^\d+\s*[.、．]\s*/, '');
 
+    let prefix = '###### ';
+    let pre = '';
+    let suf = '';
+
     if (type === 'shot') {
-      newLine = '### ' + body;
+      prefix = '### ';
     } else if (type === 'scene') {
-      const n = this.sceneNumberAt(editor, line);
-      newLine = '## ' + n + '. ' + body.replace(/^\s*\d+\s*[.、．]\s*/, '');
+      prefix = '## ' + this.sceneNumberAt(editor, line) + '. ';
+      body = body.replace(/^\s*\d+\s*[.、．]\s*/, '');
     } else if (type === 'character') {
-      newLine = '#### ' + body;
+      prefix = '#### ';
     } else if (type === 'dialogue') {
-      newLine = '> ' + body;
+      prefix = '> ';
+      pre = '“'; suf = '”';        // 台词用中文引号包起来
     } else if (type === 'paren') {
-      newLine = '##### ' + body.replace(/^[（(]|[）)]$/g, '');
+      prefix = '##### ';
+      pre = '（'; suf = '）';      // 说明（情绪/动作提示）用全角括号包起来
     }
+
+    // 正文为空时在包装符**内部**补一个零宽空格：既让原生 caret 有字符可依，
+    // 又保证光标停在里面，接着打字不会跑到引号/括号外面。
+    const filler = body ? '' : '\u200B';
+    const newLine = prefix + pre + body + filler + suf;
+    const caret = newLine.length - suf.length;
 
     const oldLen = text.length;
     editor.replaceRange(newLine, { line, ch: 0 }, { line, ch: oldLen });
-    editor.setCursor({ line, ch: newLine.length });
+    editor.setCursor({ line, ch: caret });
     // 切完类型：在插入点右上角报出“现在是什么类型”，不再借用鼠标坐标
     this.showCaretBadge(type);
   }
@@ -480,7 +522,7 @@ module.exports = class ScriptZhPlugin extends Plugin {
   }
 
   // anchor: 'mouse' | 'caret'；rect 是锚点的包围盒
-  showBadge(text, anchor, rect) {
+  showBadge(text, anchor, rect, msOverride) {
     if (!this.badge) return;
     this.badge.textContent = text;
     this.badge.classList.toggle('is-caret', anchor === 'caret');
@@ -489,7 +531,7 @@ module.exports = class ScriptZhPlugin extends Plugin {
     if (anchor === 'caret') this.placeBadge(rect, 12, 6);
     else this.placeBadge(rect, 18, 18);
     if (this.hideTimer) clearTimeout(this.hideTimer);
-    const ms = anchor === 'caret' ? this.caretMs : this.mouseMs;
+    const ms = msOverride || (anchor === 'caret' ? this.caretMs : this.mouseMs);
     this.hideTimer = setTimeout(() => this.hideBadge(), ms);
   }
 
@@ -502,11 +544,15 @@ module.exports = class ScriptZhPlugin extends Plugin {
 
   // 键盘没经过鼠标就切了类型：把“切成了什么”写在插入点右上角
   showCaretBadge(type, attempt) {
-    const label = typeLabel(type);
+    this.showCaretBadgeLabel(typeLabel(type), this.caretMs, attempt);
+  }
+
+  // 通用版：直接给文案和显示时长（点击定位用 1 秒，Tab 切类型用 2 秒）
+  showCaretBadgeLabel(label, ms, attempt) {
     const cm = this.getCM();
     const rect = this.caretRect(cm);
     if (rect) {
-      this.showBadge(label, 'caret', rect);
+      this.showBadge(label, 'caret', rect, ms);
       // 行内容刚换过，排版可能晚一帧；下一帧按新位置再校一次
       const self = this;
       requestAnimationFrame(() => {
@@ -520,7 +566,7 @@ module.exports = class ScriptZhPlugin extends Plugin {
     const n = attempt || 0;
     if (n >= 4) { this.hideBadge(); return; }
     const self = this;
-    requestAnimationFrame(() => self.showCaretBadge(type, n + 1));
+    requestAnimationFrame(() => self.showCaretBadgeLabel(label, ms, n + 1));
   }
 
   // Tab / Shift+Tab 交给 CM 的 keymap 处理（处理完会自己画角标）；其它按键撤掉角标
@@ -532,6 +578,13 @@ module.exports = class ScriptZhPlugin extends Plugin {
   // 悬停在正文某一行上时，实时显示那一行的类型（贴着鼠标右上角）
   hoverUpdate(e) {
     if (!e || e.clientX === undefined) return;
+    // 点击时浏览器会顺带补一个同坐标的 mousemove；别让它把刚放到插入点的气泡顶掉。
+    // 只有"真的移到了新位置"才让悬停接管。
+    if (Date.now() - this.lastPointerDown < 150 &&
+        Math.abs(e.clientX - this.lastDownX) < 3 &&
+        Math.abs(e.clientY - this.lastDownY) < 3) {
+      return;
+    }
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!view) return this.hideBadge();
     const at = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
@@ -581,7 +634,8 @@ module.exports = class ScriptZhPlugin extends Plugin {
     const pandoc = this.settings.pandocPath;
     if (!pandoc || !fs.existsSync(pandoc)) { new Notice(t('notice.noPandoc', pandoc)); return; }
 
-    const text = await this.app.vault.read(file);
+    // 导出前清掉空行占位用的零宽空格，避免漏进 Word / HTML / 纯文本
+    const text = (await this.app.vault.read(file)).replace(/\u200B/g, '');
     const tmp = this.tmpFile('.md');
     const dir = path.join(this.vaultBase(), path.dirname(file.path));
     const base = path.basename(file.path, path.extname(file.path));

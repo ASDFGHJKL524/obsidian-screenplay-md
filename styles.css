@@ -35,9 +35,12 @@
   border-radius: 3px;
 }
 
+/* 动作（六级标题）：叙述文字，用正常字重。
+   原先这里和「镜头」（三级标题）一样是 700，同字号、同字重、同缩进，
+   两个类型在编辑器里完全分不出来。动作是旁白，正常字重才对。 */
 .markdown-source-view.mod-cm6 .cm-line.HyperMD-header-6 {
   font-size: 1em !important;
-  font-weight: 700 !important;
+  font-weight: 400 !important;
   padding-left: 0 !important;
 }
 
@@ -119,7 +122,7 @@
 .markdown-preview-view blockquote,
 .markdown-reading-view blockquote {
   margin: 0.1em 0;
-  padding-left: 2.2em;
+  padding-left: 14%;
   border: none;
   background: transparent;
   font-style: normal;
@@ -168,4 +171,37 @@
   font-size: 1em !important;
   font-weight: 700 !important;
   padding-left: 0 !important;
+}
+
+/* ===== 2026-11-21 修复：镜头(H3) / 动作(H6) 行看不到光标 =====
+   实测（CDP 连拍截图对照六种类型）：只有这两种类型坏，而它们的共同点是
+   padding-left: 0。此时 Obsidian 的原生 caret 正好落在行内容盒的最左边缘，
+   不会被绘制；其余四种类型都有水平内距，所以正常。
+   A/B 结果：只加背景色 —— 无效；加 padding-left（0.05em 起）—— 立即恢复正常。
+
+   这里取 0.2em（16px 字号下约 3px），比 0.05em 更稳，
+   避免某些缩放比下亚像素取整变回 0。数值要调就改这一处。 */
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-header-3,
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-header-6 {
+  padding-left: 0.2em !important;
+}
+
+/* ===== 2026-11-21：源码视图的「台词」补齐缩进 =====
+   阅读视图里 blockquote 有 padding-left: 2.2em，但源码视图那套规则把底色 /
+   左边框 / 伪元素全抹平了又没给内距，于是「台词」和「动作」在编辑器里长得
+   几乎一样（只差动作是粗体）。
+
+   缩进值按 Final Draft 的标准比例取：正文区宽 7"，台词左缩进 2.5" →
+   约 14%。角色名的 33%、括号的 26% 本来就对应 Final Draft 的 31% / 23%，
+   只有台词这边掉了队。要调就改这一个数。 */
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-quote,
+.markdown-source-view.mod-cm6 .cm-line.HyperMD-quote-1 {
+  padding-left: 14% !important;
+}
+
+/* 同一条规则再加一遍高优先级选择器：有的主题会给 .cm-line 设 padding 简写，
+   加上 .cm-content 祖先提高特异性，避免被压掉 */
+.markdown-source-view.mod-cm6 .cm-content .cm-line.HyperMD-quote,
+.markdown-source-view.mod-cm6 .cm-content .cm-line.HyperMD-quote-1 {
+  padding-left: 14% !important;
 }
