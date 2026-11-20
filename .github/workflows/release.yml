@@ -26,6 +26,10 @@ jobs:
         env:
           V: ${{ steps.manifest.outputs.version }}
         run: |
+          # checkout 出来的工作区没有 git 身份，git tag -a 会因为
+          # "unable to auto-detect email address" 直接失败——必须先配。
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git rev-parse -q --verify "refs/tags/$V" >/dev/null; then
             echo "tag $V already points somewhere; leaving it alone"
           else
