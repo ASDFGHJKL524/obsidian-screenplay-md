@@ -31,8 +31,11 @@ stay consistent, and the structure survives export to Word / PDF / HTML.
 - <kbd>Tab</kbd>: next type (Scene → Shot → Action → Character → Dialogue → Parenthetical → Scene)
 - <kbd>Shift</kbd>+<kbd>Tab</kbd>: previous type
 - Command palette: "Set as …" for each type, "Cycle line type", "Renumber scenes"
-- Hover any line: a small badge near the pointer shows that line's type; it fades out after
-  one second of stillness or as soon as you type
+- After a <kbd>Tab</kbd> switch, a badge appears at the top-right of the caret saying what the line
+  became (Scene / Shot / Action / Character / Dialogue / Parenthetical) and fades after two seconds
+  (or as soon as you type)
+- Hover any line: the same badge follows the pointer and shows that line's type
+- Only one badge is ever visible: the most recent action (Tab or hover) owns it
 
 ## Language
 

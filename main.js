@@ -283,15 +283,23 @@ module.exports = class ScriptZhPlugin extends Plugin {
     await this.loadSettings();
     LANG = resolveLang(this.settings.lang);
 
+    // 角标只有一个元素、一个锚点，任何时刻至多一个可见：
+    //   'mouse' = 跟着鼠标（悬停某行时提示那行是什么类型）
+    //   'caret' = 跟着插入点（Tab 切完类型后提示切成了什么）
     this.badge = document.createElement('div');
     this.badge.className = 'script-zh-badge is-hidden';
     document.body.appendChild(this.badge);
 
-    this.idleMs = 1000;
+    this.badgeAnchor = null;
+    this.hideTimer = null;
+    this.mouseMs = 1200;
+    this.caretMs = 2000;
     this.onMouseMove = (e) => this.hoverUpdate(e);
-    this.onKeyDown = () => this.hideBadge();
+    this.onKeyDown = (e) => this.onAnyKeyDown(e);
+    this.onResize = () => this.hideBadge();
     document.addEventListener('mousemove', this.onMouseMove, { passive: true });
     document.addEventListener('keydown', this.onKeyDown, true);
+    window.addEventListener('resize', this.onResize);
 
     // Tab / Shift+Tab 换类型
     let hooked = false;
@@ -313,20 +321,6 @@ module.exports = class ScriptZhPlugin extends Plugin {
 
 
 
-    // 光标移动时刷新状态栏（editor-change 只在内容变化时触发）
-    try {
-      const { EditorView } = require('@codemirror/view');
-      const self = this;
-      this.registerEditorExtension(EditorView.updateListener.of((u) => {
-        if (u.selectionSet || u.docChanged || u.focusChanged) {
-          window.setTimeout(() => self.refresh(), 0);
-        }
-        if (u.focusChanged) {
-          window.setTimeout(() => self.refresh(), 60);
-        }
-      }));
-    } catch (e) { console.warn('[script-zh] 光标监听不可用', e); }
-
     for (const k of ORDER) {
       this.addCommand({ id: 'set-' + k, name: t('cmd.set', typeLabel(k)), editorCallback: (e) => this.applyType(e, k) });
     }
@@ -340,16 +334,17 @@ module.exports = class ScriptZhPlugin extends Plugin {
 
     this.addSettingTab(new ScriptZhSettingTab(this.app, this));
 
-    this.registerEvent(this.app.workspace.on('editor-change', () => this.refresh()));
-    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refresh()));
-    this.registerEvent(this.app.workspace.on('file-open', () => this.refresh()));
-    this.app.workspace.onLayoutReady(() => this.refresh());
+    // 换文件 / 换叶子时旧角标立刻撤掉；正文变动不再参与，
+    // 否则 Tab 刚画到插入点的角标会被 content change 擦掉。
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.hideBadge()));
+    this.registerEvent(this.app.workspace.on('file-open', () => this.hideBadge()));
   }
 
   onunload() {
     if (this.onMouseMove) document.removeEventListener('mousemove', this.onMouseMove);
     if (this.onKeyDown) document.removeEventListener('keydown', this.onKeyDown, true);
-    if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (this.onResize) window.removeEventListener('resize', this.onResize);
+    if (this.hideTimer) clearTimeout(this.hideTimer);
     if (this.badge) this.badge.remove();
   }
 
@@ -400,20 +395,8 @@ module.exports = class ScriptZhPlugin extends Plugin {
     const oldLen = text.length;
     editor.replaceRange(newLine, { line, ch: 0 }, { line, ch: oldLen });
     editor.setCursor({ line, ch: newLine.length });
-    // 切换后立刻把标签更新出来：优先鼠标位置，否则用光标位置
-    const m = this.lastMouse;
-    if (m) { this.hoverUpdate(m); }
-    else {
-      const v = this.app.workspace.getActiveViewOfType(MarkdownView);
-      const cm = v && v.editor && v.editor.cm;
-      if (cm && typeof cm.coordsAtPos === 'function') {
-        const head = cm.state.selection.main.head;
-        const c = cm.coordsAtPos(head);
-        if (c) this.hoverUpdate({ clientX: c.right, clientY: c.bottom });
-      } else {
-        this.showBadge(typeLabel(type));
-      }
-    }
+    // 切完类型：在插入点右上角报出“现在是什么类型”，不再借用鼠标坐标
+    this.showCaretBadge(type);
   }
 
   sceneNumberAt(editor, line) {
@@ -447,47 +430,117 @@ module.exports = class ScriptZhPlugin extends Plugin {
     new Notice(t('notice.renumbered', n));
   }
 
-  showBadge(text) {
-    if (!this.badge) return;
-    this.badge.textContent = text;
-    this.badge.classList.remove('is-hidden');
+  // ---------- 角标（鼠标 / 插入点，二选一） ----------
+  // 同一时间只可能显示一个：鼠标在正文行上就跟着鼠标，
+  // Tab / 命令切完类型就跟着插入点；切换锚点前旧锚点先撤掉。
+
+  getCM() {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    return view && view.editor ? view.editor.cm : null;
   }
 
-  hideBadge() {
-    if (!this.badge) return;
-    this.badge.classList.add('is-hidden');
-    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null; }
+  editorFocused() {
+    const a = document.activeElement;
+    return !!(a && a.closest && a.closest('.cm-editor'));
   }
 
-  // 出现在指针右上方，贴边时自动翻边
-  moveBadge(e) {
+  // 插入点所在文本行在屏幕上的行框；拿不到时返回 null
+  // 注意：CM 在“光标右边没字”（行尾/空行）时只返回一个点（h=0），
+  // 直接拿它当行顶会把角标压到光标身上，所以这里要补出一行的高度。
+  caretRect(cm) {
+    if (!cm) return null;
+    try {
+      const head = cm.state.selection.main.head;
+      const c = cm.coordsAtPos(head);
+      if (!c) return null;
+      const lh = cm.defaultLineHeight || 22;
+      const tall = c.bottom - c.top > 2;
+      return {
+        left: c.left,
+        right: c.right || c.left,
+        top: tall ? c.top : c.top - lh,
+        bottom: tall ? c.bottom : c.top,
+      };
+    } catch (e) { /* 正在重排，交给下一帧 */ }
+    return null;
+  }
+
+  // 贴锚点右上角；右边放不下翻到左边，顶部放不下翻到下方
+  placeBadge(rect, gapX, gapY) {
     if (!this.badge) return;
-    const pad = 18;
-    const w = this.badge.offsetWidth || 40;
-    const h = this.badge.offsetHeight || 18;
-    let left = e.clientX + pad;
-    let top = e.clientY - pad - h;
-    if (left + w > window.innerWidth - 8) left = e.clientX - pad - w;
-    if (top < 8) top = e.clientY + pad;
+    const w = this.badge.offsetWidth || 44;
+    const h = this.badge.offsetHeight || 20;
+    let left = rect.right + gapX;
+    let top = rect.top - gapY - h;
+    if (left + w > window.innerWidth - 8) left = rect.left - gapX - w;
+    if (left < 8) left = 8;
+    if (top < 8) top = rect.bottom + gapY;
     this.badge.style.left = Math.round(left) + 'px';
     this.badge.style.top = Math.round(top) + 'px';
   }
 
-  // 悬停在正文某一行上时，实时显示那一行的类型
+  // anchor: 'mouse' | 'caret'；rect 是锚点的包围盒
+  showBadge(text, anchor, rect) {
+    if (!this.badge) return;
+    this.badge.textContent = text;
+    this.badge.classList.toggle('is-caret', anchor === 'caret');
+    this.badge.classList.remove('is-hidden');
+    this.badgeAnchor = anchor;
+    if (anchor === 'caret') this.placeBadge(rect, 12, 6);
+    else this.placeBadge(rect, 18, 18);
+    if (this.hideTimer) clearTimeout(this.hideTimer);
+    const ms = anchor === 'caret' ? this.caretMs : this.mouseMs;
+    this.hideTimer = setTimeout(() => this.hideBadge(), ms);
+  }
+
+  hideBadge() {
+    if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+    if (!this.badge) return;
+    this.badge.classList.add('is-hidden');
+    this.badgeAnchor = null;
+  }
+
+  // 键盘没经过鼠标就切了类型：把“切成了什么”写在插入点右上角
+  showCaretBadge(type, attempt) {
+    const label = typeLabel(type);
+    const cm = this.getCM();
+    const rect = this.caretRect(cm);
+    if (rect) {
+      this.showBadge(label, 'caret', rect);
+      // 行内容刚换过，排版可能晚一帧；下一帧按新位置再校一次
+      const self = this;
+      requestAnimationFrame(() => {
+        if (self.badgeAnchor !== 'caret') return;
+        const r2 = self.caretRect(cm);
+        if (r2) self.placeBadge(r2, 12, 6);
+      });
+      return;
+    }
+    // 偶尔第一帧还量不到插入点：最多再等 4 帧，仍拿不到就别乱放
+    const n = attempt || 0;
+    if (n >= 4) { this.hideBadge(); return; }
+    const self = this;
+    requestAnimationFrame(() => self.showCaretBadge(type, n + 1));
+  }
+
+  // Tab / Shift+Tab 交给 CM 的 keymap 处理（处理完会自己画角标）；其它按键撤掉角标
+  onAnyKeyDown(e) {
+    if (e && e.key === 'Tab' && this.editorFocused()) return;
+    this.hideBadge();
+  }
+
+  // 悬停在正文某一行上时，实时显示那一行的类型（贴着鼠标右上角）
   hoverUpdate(e) {
-    if (e && e.clientX !== undefined) this.lastMouse = { clientX: e.clientX, clientY: e.clientY };
+    if (!e || e.clientX === undefined) return;
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!view) return this.hideBadge();
+    const at = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
 
     const el = document.elementFromPoint(e.clientX, e.clientY);
 
     // 悬停在文件名标题（内联标题）上
     if (el && el.closest && el.closest('.inline-title')) {
-      this.showBadge(t('type.title'));
-      this.moveBadge(e);
-      if (this.idleTimer) clearTimeout(this.idleTimer);
-      this.idleTimer = setTimeout(() => this.hideBadge(), this.idleMs);
-      return;
+      return this.showBadge(t('type.title'), 'mouse', at);
     }
 
     const cmDom = view.containerEl.querySelector('.cm-editor');
@@ -497,8 +550,8 @@ module.exports = class ScriptZhPlugin extends Plugin {
     // 必须真的落在某一行的行框里（行间空隙、右边空白、空白区域都不算）
     const lineEl = el.closest('.cm-line');
     if (!lineEl) return this.hideBadge();
-    const rect = lineEl.getBoundingClientRect();
-    if (e.clientY < rect.top - 1 || e.clientY > rect.bottom + 1) return this.hideBadge();
+    const lrect = lineEl.getBoundingClientRect();
+    if (e.clientY < lrect.top - 1 || e.clientY > lrect.bottom + 1) return this.hideBadge();
 
     const cm = view.editor && view.editor.cm;
     if (!cm || typeof cm.posAtCoords !== 'function') return this.hideBadge();
@@ -508,23 +561,8 @@ module.exports = class ScriptZhPlugin extends Plugin {
 
     const line = cm.state.doc.lineAt(pos);
     const raw = line.text.trim();
-    let label;
-    if (!raw) label = t('type.blank');
-    else {
-      const type = detectType(line.text);
-      label = typeLabel(type);
-    }
-
-    this.showBadge(label);
-    this.moveBadge(e);
-
-    if (this.idleTimer) clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => this.hideBadge(), this.idleMs);
-  }
-
-  refresh() {
-    // 徽标由鼠标悬停驱动；这里只在没有鼠标位置时兜底隐藏
-    if (!this.lastMouse) this.hideBadge();
+    const label = !raw ? t('type.blank') : typeLabel(detectType(line.text));
+    this.showBadge(label, 'mouse', at);
   }
 
   // ---------- 导出 ----------
