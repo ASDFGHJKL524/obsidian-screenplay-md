@@ -410,21 +410,33 @@ module.exports = class ScriptZhPlugin extends Plugin {
               const rest = cur.text.slice(m[1].length);
               const body = rest.replace(/\u200B/g, '');
               const hasZwsp = rest.indexOf('\u200B') >= 0;
-              // 正文为空（整行只剩标记）时必须给这一行一个真实字符：Obsidian 重绘
-              // 这一行之后，纯标记行的光标就不再绘制了（实测：点完立刻拍能拍到，
-              // 等 1.4 秒再拍就没了——用户说的「跳一下就没了」就是它）。
-              // 只在「点击 / 换行进入」时补，不在退格过程中补，免得和删除打架；
-              // 而退格遇到只剩标记的行会被下面的智能退格一次删干净，不会停在这里。
+              // 整行只剩标记：补一个占位字符，并把光标归到行尾。
+              // 两件事都必须做：
+              //  · 不补占位符 → 这种行重绘之后光标不画（实测行尾 5/5 位置拍不到）
+              //  · 不归位 → 点击会落在标记内部（实测第 3 列），接着打字插进 "###" 和 "#" 之间
               if (!body) {
-                if (!hasZwsp && (clicked || touchedBreak)) {
+                if (!hasZwsp) {
                   view.dispatch({
                     changes: { from: cur.to, insert: '\u200B' },
                     selection: { anchor: cur.to + 1 },
                     scrollIntoView: false
                   });
-                } else if (hasZwsp && sel.head !== cur.to) {
+                } else if (sel.head !== cur.to) {
                   view.dispatch({ selection: { anchor: cur.to }, scrollIntoView: false });
                 }
+                return;
+              }
+              // 有正文之后，占位符必须清掉。它只在「整行空着」时有用，留着会变成
+              // 「标记 + 隐形字符 + 正文」，光标画不出来（实测：空角色行打一个字，
+              // 行变成 "#### ZWSP 哈"，光标就没了；退掉那个字又回来）。
+              //
+              // 只删那一个字符，**不要整行替换**：整行重写会让光标失去绘制
+              // （实测整行 dispatch 之后 1.5 秒仍拍不到光标，而同样位置点击进去就有）。
+              // 不传 selection，让 CodeMirror 自己把光标映射过去。
+              if (hasZwsp) {
+                const zIdx = cur.text.indexOf('\u200B');
+                const from = cur.from + zIdx;
+                view.dispatch({ changes: { from, to: from + 1, insert: '' }, scrollIntoView: false });
                 return;
               }
               // 有正文时，把光标从标记内部挪到正文开头
@@ -529,12 +541,12 @@ module.exports = class ScriptZhPlugin extends Plugin {
       pre = '（'; suf = '）';      // 说明（情绪/动作提示）用全角括号包起来
     }
 
-    // 正文为空时在标记后面补一个零宽空格：整行只剩标记时，Obsidian 重绘这一行
-    // 之后光标就不再绘制了（用户说的「Tab 切完类型丢光标」就是这个）。
-    // 曾经因为「退格退不掉占位符」把它删掉过——现在智能退格会在光标贴着标记时
-    // 一次删掉整个标记，不会再卡住，所以可以安全地补回来。
-    const filler = body ? '' : '\u200B';
-    const newLine = prefix + pre + body + filler + suf;
+    // 不插零宽空格占位：隐藏标记改成绝对定位之后，整行只剩标记时这一行照样
+    // 能画光标（实测 #### / ## / > 三种空标记行的行尾都拍到了光标闪动）。
+    // 反过来，插了占位符会带来两个坑：① 退格退不掉它；② 一旦开始打字，
+    // 清理这个隐形字符的那次 dispatch 会让光标失去绘制（实测角色行打一个字光标就没了）。
+    // 老文件里已经有的残留由归一化那段的清理逻辑负责删掉。
+    const newLine = prefix + pre + body + suf;
     const caret = newLine.length - suf.length;
 
     const oldLen = text.length;
@@ -656,13 +668,25 @@ module.exports = class ScriptZhPlugin extends Plugin {
     const rect = this.caretRect(cm);
     if (rect) {
       this.showBadge(label, 'caret', rect, ms);
-      // 行内容刚换过，排版可能晚一帧；下一帧按新位置再校一次
+      // 行内容刚换过，排版会晚一两帧；而且整行只剩标记时还会再补一个占位字符，
+      // 光标要再挪一次（实测角色行从 x=431 跳到 492，气泡留在 443 就成了
+      // 「飞到行首/左上角」）。所以这里**追几帧**，直到插入点不再移动为止。
       const self = this;
-      requestAnimationFrame(() => {
-        if (self.badgeAnchor !== 'caret') return;
+      let last = null;
+      let tries = 0;
+      const follow = () => {
+        if (self.badgeAnchor !== 'caret') return;   // 已经被别的锚点接管
         const r2 = self.caretRect(cm);
-        if (r2) self.placeBadge(r2, 12, 6);
-      });
+        if (r2) {
+          const key = Math.round(r2.left) + ':' + Math.round(r2.top);
+          if (key !== last) { last = key; self.placeBadge(r2, 12, 6); }
+        }
+      };
+      // 两条路一起跟：rAF 跟排版，定时器兜底。
+      // 窗口在后台时 Chromium 会限制 rAF（实测一帧都不执行），只靠 rAF 会停在旧位置。
+      const tick = () => { follow(); if (++tries < 10) requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+      [40, 100, 200, 360].forEach((ms) => setTimeout(follow, ms));
       return;
     }
     // 偶尔第一帧还量不到插入点：最多再等 4 帧，仍拿不到就别乱放

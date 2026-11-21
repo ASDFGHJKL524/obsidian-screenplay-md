@@ -47,14 +47,14 @@
 .markdown-source-view.mod-cm6 .cm-line.HyperMD-header-4 {
   font-size: 1em !important;
   font-weight: 600 !important;
-  padding-left: 33% !important;
+  padding-left: calc(33% + 0.2em) !important;
 }
 
 .markdown-source-view.mod-cm6 .cm-line.HyperMD-header-5 {
   font-size: 1em !important;
   font-weight: 400 !important;
   font-style: italic !important;
-  padding-left: 26% !important;
+  padding-left: calc(26% + 0.2em) !important;
   opacity: 0.85;
 }
 
