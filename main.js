@@ -293,9 +293,9 @@ module.exports = class ScriptZhPlugin extends Plugin {
 
     this.badgeAnchor = null;
     this.hideTimer = null;
-    this.mouseMs = 1200;
-    this.caretMs = 2000;
-    this.clickMs = 1000;          // 点击定位后，气泡跟着插入点显示多久
+    this.mouseMs = 1700;          // 悬停：跟着鼠标显示多久（原 1200，全体 +0.5s）
+    this.caretMs = 2500;          // Tab 切完类型：跟着插入点显示多久（原 2000）
+    this.clickMs = 1200;          // 点击 / 回车换行：跟着插入点显示多久（1.5s 实测偏长，收到 1.2s）
     this.lastPointerDown = 0;     // 最近一次按下指针的时间：用来区分"点击"和"打字/程序改选"
     this.lastDownX = -1;
     this.lastDownY = -1;
@@ -330,14 +330,34 @@ module.exports = class ScriptZhPlugin extends Plugin {
       this.app.scope.register([], 'Shift-Tab', () => { if (!self.getEditor()) return false; self.cycle(-1); return true; });
     }
 
-    // 点击把光标放到某一行后：跟着插入点把「这行是什么类型」报出来（默认 1 秒）。
-    // 只认鼠标点击引起的选择变化 —— 打字、切文件、程序改选都不弹。
+    // 两种触发下，跟着插入点把「这行是什么类型」报出来：
+    //   ① 鼠标点击把光标放到某一行
+    //   ② 按回车换行到下一行
+    // 其余情况（普通打字、切文件、程序改选）都不弹，免得一直闪。
     try {
       const { EditorView } = require('@codemirror/view');
       const self = this;
       this.registerEditorExtension(EditorView.updateListener.of((u) => {
+        if (!u.selectionSet && !u.docChanged) return;
+
+        // ② 这次事务里有没有插入换行符（回车 / Shift+回车 / 粘贴多行都算）
+        let insertedNewline = false;
+        if (u.docChanged) {
+          try {
+            u.transactions.forEach((tr) => {
+              if (insertedNewline) return;
+              tr.changes.iterChanges((fromA, toA, fromB, toB, ins) => {
+                if (!insertedNewline && ins.toString().indexOf('\n') >= 0) insertedNewline = true;
+              });
+            });
+          } catch (e) { /* iterChanges 不可用就退化为只认点击 */ }
+        }
+
+        // ① 500ms 内按下过指针，算鼠标点击
+        const clicked = Date.now() - self.lastPointerDown <= 500;
+        if (!clicked && !insertedNewline) return;
         if (!u.selectionSet) return;
-        if (Date.now() - self.lastPointerDown > 500) return;
+
         const head = u.state.selection.main.head;
         const line = u.state.doc.lineAt(head);
         const body = line.text.replace(/\u200B/g, '').trim();

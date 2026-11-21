@@ -35,9 +35,11 @@ stay consistent, and the structure survives export to Word / PDF / HTML.
   became (Scene / Shot / Action / Character / Dialogue / Parenthetical) and fades after two seconds
   (or as soon as you type)
 - Hover any line: the same badge follows the pointer and shows that line's type
-- Click anywhere: the badge shows at the caret for one second. Only changes caused by a mouse
-  click count — typing, switching notes or programmatic selection never raise it
-- Only one badge is ever visible: the most recent action (Tab, hover or click) owns it
+- Click anywhere, or press <kbd>Enter</kbd> to move to a new line: the badge appears at the caret
+  and fades after 1.2 s. Only a mouse click or an inserted line break raise it — ordinary typing,
+  switching notes or programmatic selection never do
+- Hover uses 1.7 s, and the <kbd>Tab</kbd> badge uses 2.5 s
+- Only one badge is ever visible: the most recent action (Tab, hover, click or Enter) owns it
 
 ## Language
 
