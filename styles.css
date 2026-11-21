@@ -89,6 +89,9 @@
   border: none;
   background: var(--background-secondary);
   border-radius: 3px;
+  /* 打印时把这条底色也印出来（否则 PDF 里场景就是一条白字） */
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
 }
 
 .markdown-preview-view h6,
@@ -186,6 +189,15 @@
   padding-left: 0.2em !important;
 }
 
+/* ===== 2026-11-21 修复：空标记行的高度 =====
+   只有标记、没有正文的行（空台词 "> "、空场景 "## " 等）在编辑器里高度是 0，
+   垂直移动算不出落点，**上箭头会把整行跳过**（实测：从空台词下面按上箭头，
+   光标直接跳到它上面那一行；加 padding 无效，给行加最小高度才恢复）。
+   1.5em 就是正常行高，视觉上没有变化。 */
+.markdown-source-view.mod-cm6 .cm-line {
+  min-height: 1.5em !important;
+}
+
 /* ===== 2026-11-21 光标修复③（定案）：隐藏标记改用绝对定位 =====
    演进过程（都是实测，别再改回去）：
      ① font-size:0 / line-height:0 → 标记零宽零高。点行尾时点击位置解析进标记
@@ -216,17 +228,21 @@
   letter-spacing: 0 !important;
 }
 
-/* ===== 2026-11-21：源码视图的「台词」补齐缩进 =====
+/* ===== 2026-11-21：源码视图的「台词」补齐缩进（左右对称，视觉居中） =====
    阅读视图里 blockquote 有 padding-left: 2.2em，但源码视图那套规则把底色 /
    左边框 / 伪元素全抹平了又没给内距，于是「台词」和「动作」在编辑器里长得
    几乎一样（只差动作是粗体）。
 
-   缩进值按 Final Draft 的标准比例取：正文区宽 7"，台词左缩进 2.5" →
-   约 14%。角色名的 33%、括号的 26% 本来就对应 Final Draft 的 31% / 23%，
-   只有台词这边掉了队。要调就改这一个数。 */
+   缩进值按 Final Draft 的标准比例取：正文区宽 7"，台词左缩进 2.5" → 约 14%。
+   角色名的 33%、括号的 26% 本来就对应 Final Draft 的 31% / 23%。
+
+   **左右都给 14%**：只缩左边会让整块偏左，看起来不像居中。左右相等时文字块
+   自然落在中间，最接近剧本里对话的样子。要调宽窄就改这两个数（改一个就一起改，
+   否则又偏了）。 */
 .markdown-source-view.mod-cm6 .cm-line.HyperMD-quote,
 .markdown-source-view.mod-cm6 .cm-line.HyperMD-quote-1 {
   padding-left: 14% !important;
+  padding-right: 14% !important;
 }
 
 /* 同一条规则再加一遍高优先级选择器：有的主题会给 .cm-line 设 padding 简写，
@@ -234,4 +250,83 @@
 .markdown-source-view.mod-cm6 .cm-content .cm-line.HyperMD-quote,
 .markdown-source-view.mod-cm6 .cm-content .cm-line.HyperMD-quote-1 {
   padding-left: 14% !important;
+  padding-right: 14% !important;
+}
+
+/* ===== 阅读视图 / 导出 PDF：跟编辑器同一套剧本排版 =====
+   导出 PDF 走的是 Obsidian 自带的打印，渲染的是**阅读视图**的 DOM，不是编辑器。
+   所以上面那些只写给 .markdown-source-view 的规则在 PDF 里完全不起作用——
+   这就是「看到的和导出的不一样」的原因。下面这段把阅读视图补齐，并用
+   @media print 把打印专有的部分（纸张、页边距、不断页）单独写清楚。
+
+   要改剧本长什么样，编辑器和阅读视图两处都要改；台词的两个 14% 也必须一致。 */
+.markdown-preview-view h3,
+.markdown-reading-view h3 {
+  font-size: 1em;
+  font-weight: 700;
+  margin: 1em 0 0.2em;
+  padding: 0;
+  border: none;
+  text-align: left;
+}
+
+.markdown-preview-view h6,
+.markdown-reading-view h6 {
+  font-weight: 400;          /* 动作是正文，不要加粗（编辑器里也是 400） */
+}
+
+.markdown-preview-view blockquote,
+.markdown-reading-view blockquote {
+  padding-left: 14%;
+  padding-right: 14%;
+}
+
+/* 打印：字号、行距、纸型都对编辑器，背景色（场景灰条）要强制打印出来 */
+@media print {
+  @page {
+    size: A4;
+    margin: 18mm 16mm;
+  }
+
+  body,
+  .markdown-preview-view,
+  .markdown-reading-view,
+  .markdown-rendered {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    background: #fff !important;
+    color: #111 !important;
+    font-family: "霞鹜文楷", "LXGW WenKai", "Songti SC", "宋体", serif !important;
+    font-size: 12pt;
+    line-height: 1.6;
+  }
+
+  /* 别把角色名和它的台词拆到两页去 */
+  .markdown-preview-view h4,
+  .markdown-preview-view h5,
+  .markdown-preview-view blockquote,
+  .markdown-rendered h4,
+  .markdown-rendered h5,
+  .markdown-rendered blockquote,
+  .markdown-preview-view p:has(+ blockquote) {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* 场景是新的段落，换页更自然（只在场景前面加，别把普通行也拆开） */
+  .markdown-preview-view h2,
+  .markdown-rendered h2 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+
+  /* 底下这些是界面零件，打印不要 */
+  .workspace-ribbon,
+  .workspace-leaf-header,
+  .view-header,
+  .status-bar,
+  .side-dock-ribbon,
+  .collapse-indicator {
+    display: none !important;
+  }
 }

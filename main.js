@@ -46,6 +46,11 @@ const I18N = {
     'fmt.txt': 'Plain text (.txt)',
     'fmt.txtDesc': 'Text only, no formatting',
     'modal.sameFolder': 'The file is written next to the note, with the same name.',
+  'modal.dest': 'Export to',
+  'modal.destTitle': 'Choose where to save',
+  'modal.destHint': 'You can edit the path directly. Pick the format below; the extension is filled in for you.',
+  'modal.browse': 'Browse…',
+  'modal.noDialog': 'System save dialog is unavailable here — edit the path by hand.',
     'modal.importTitle': 'Import screenplay file',
     'modal.importHint': 'Supports .io, Word .docx, .md / .txt',
     'modal.choose': 'Choose a file…',
@@ -59,6 +64,11 @@ const I18N = {
     'settings.pandoc': 'pandoc path',
     'settings.pandocDesc': 'Only used to export Word / HTML / plain text. Not needed for importing .docx.',
     'settings.testPandoc': 'Test pandoc',
+  'settings.typewriter': 'Typewriter scrolling',
+  'settings.typewriterDesc': 'While typing, keep the caret near the middle of the screen so you never write into the bottom edge.',
+  'settings.refDoc': 'Script style template (.docx)',
+  'settings.refDocDesc': 'Used when exporting Word. Leave empty to use the bundled template, which maps scene / shot / action / character / paren / dialogue to screenplay layout.',
+  'settings.refDocPh': 'bundled template',
     'settings.test': 'Test',
     'settings.pathMissing': 'Path does not exist: {0}',
     'settings.testFailed': 'Failed: {0}',
@@ -103,6 +113,11 @@ const I18N = {
     'fmt.txt': '纯文本（.txt）',
     'fmt.txtDesc': '只要文字，不要任何格式',
     'modal.sameFolder': '文件会和笔记放在同一个文件夹里，文件名相同。',
+  'modal.dest': '导出到',
+  'modal.destTitle': '选择保存位置',
+  'modal.destHint': '路径可以直接改。选下面的格式，扩展名会自动换成对应的。',
+  'modal.browse': '浏览…',
+  'modal.noDialog': '这里调不出系统的另存为窗口，请直接改上面的路径。',
     'modal.importTitle': '导入剧本文件',
     'modal.importHint': '支持：.io、Word .docx、纯文本 .md / .txt',
     'modal.choose': '选一个文件…',
@@ -116,6 +131,11 @@ const I18N = {
     'settings.pandoc': 'pandoc 路径',
     'settings.pandocDesc': '只用于导出 Word / HTML / 纯文本。导入 docx 不需要它。',
     'settings.testPandoc': '测试 pandoc',
+  'settings.typewriter': '打字机滚动',
+  'settings.typewriterDesc': '打字时把光标留在屏幕中上部，不会写到屏幕底部才发现看不见自己写的字。',
+  'settings.refDoc': '剧本样式模板（.docx）',
+  'settings.refDocDesc': '导出 Word 时使用。留空就用插件自带的那份，它把场景 / 镜头 / 动作 / 角色 / 说明 / 台词映射成剧本排版。',
+  'settings.refDocPh': '自带模板',
     'settings.test': '测试',
     'settings.pathMissing': '路径不存在：{0}',
     'settings.testFailed': '跑不通：{0}',
@@ -326,30 +346,48 @@ module.exports = class ScriptZhPlugin extends Plugin {
         // 原因：整行只剩井号（健如 "##"、"#"）时，Obsidian 把它当「空标题」渲染，
         // 那个位置的光标 Chromium 不画——实测四种 CSS（width 0 / auto / 0.35em /
         // 去掉 height）全部无效，只能绕开这个状态，不要停在里面。
+        // 退格撞到隐藏标记时的规则（用户定的）：
+        //   ① 整行只剩标记（可带空格/占位符）→ 一次把标记删干净，这一行变普通空行
+        //   ② 行里还有正文 → **什么都不做**，格式符号受保护，不会被退格吃掉
+        //      （以前是"一次删掉整个标记"，会把这一行的类型弄没，正文跟着掉格式）
         { key: 'Backspace', run: (view) => {
           const sel = view.state.selection.main;
           if (!sel.empty) return false;
           const line = view.state.doc.lineAt(sel.head);
           const t = line.text;
           const bare = t.replace(/\u200B/g, '');
-          // ① 整行只剩标记（可有空格、可带占位符）：一次删干净。
-          //    必须一次删完，否则会在 "##" / "#" 这种空标题上停住——
-          //    实测那个位置 Chromium 不画光标（四种 CSS 宽度都无效）。
-          //    这也是占位符方案能用的前提：不给你机会"退到只剩占位符"。
+          // ① 整行只剩标记
           if (bare.length > 0 && /^(#{1,6}\s*|>\s*)$/.test(bare) && sel.head === line.to) {
             view.dispatch({ changes: { from: line.from, to: line.to, insert: '' }, selection: { anchor: line.from }, scrollIntoView: false });
             return true;
           }
-          // ② 光标紧贴标记末尾（如 "## 1. 内景" 的第 3 列）：一次删掉整个标记
+          // ② 光标在标记内部或紧贴标记末尾（正文还在）：吞掉这次退格，符号不动
           const m = t.match(/^(#{2,6}\s+|>\s?)/);
-          if (m) {
-            const prefixEnd = line.from + m[1].length;
-            if (sel.head === prefixEnd) {
-              view.dispatch({ changes: { from: line.from, to: prefixEnd, insert: '' }, selection: { anchor: line.from }, scrollIntoView: false });
-              return true;
-            }
-          }
+          if (m && sel.head <= line.from + m[1].length) return true;
           return false;
+        } },
+        // 回车换行：**不延续格式**，新行就是普通文字。类型由你自己按 Tab 切。
+        // （中途试过"延续当前类型"，实测不需要；这里以用户的判断为准。）
+        //
+        // 唯一要处理的是收尾符号：切到台词时占位是 `> “|”`（光标在引号中间），
+        // 切到说明是 `##### （|）`。这时按回车，收尾的 `”` / `）` 会被推到下一行开头——
+        // 用户看到的就是「引号/括号跟着走」。所以光标后面只剩一个收尾符号时，
+        // 把换行插在它**后面**。
+        { key: 'Enter', run: (view) => {
+          const sel = view.state.selection.main;
+          const from = sel.from;
+          const to = sel.to;
+          const line = view.state.doc.lineAt(from);
+          const after = line.text.slice(from - line.from);
+          const mClose = after.match(/^([”’"）)]\s*)$/);
+          const at = (!sel.empty) ? from : (mClose ? from + 1 : from);
+          const delTo = (!sel.empty) ? to : at;
+          view.dispatch({
+            changes: { from: at, to: delTo, insert: '\n' },
+            selection: { anchor: at + 1 },
+            scrollIntoView: true      // 必须让视图跟着走，否则到底部后"不翻页"
+          });
+          return true;
         } },
       ])));
       hooked = true;
@@ -393,7 +431,11 @@ module.exports = class ScriptZhPlugin extends Plugin {
         // 标记是零宽的，点击或退格之后光标很容易停在标记内部或标记后的边界上，
         // 那里接着打字会插到 "#### " 前面，把这一行的类型弄坏；
         // 行里只剩标记时那个位置连行高都没有，caret 根本画不出来。
+        //
+        // 输入法合成期间一律不碰文档：那时 dispatch 会让 CodeMirror 从 DOM 反同步，
+        // 表现就是「打一个首字母，它被重复写一遍留在那儿」。等合成结束再说。
         const view = u.view;
+        if (view.composing) return;
         const selNow = u.state.selection.main;
         if (selNow.empty) {
           const lineNo = u.state.doc.lineAt(selNow.head).number;
@@ -426,17 +468,30 @@ module.exports = class ScriptZhPlugin extends Plugin {
                 }
                 return;
               }
-              // 有正文之后，占位符必须清掉。它只在「整行空着」时有用，留着会变成
-              // 「标记 + 隐形字符 + 正文」，光标画不出来（实测：空角色行打一个字，
-              // 行变成 "#### ZWSP 哈"，光标就没了；退掉那个字又回来）。
+              // 有正文之后，占位符要清掉。它只在「整行空着」时有用，留着会变成
+              // 「标记 + 隐形字符 + 正文」，光标画不出来。
               //
-              // 只删那一个字符，**不要整行替换**：整行重写会让光标失去绘制
-              // （实测整行 dispatch 之后 1.5 秒仍拍不到光标，而同样位置点击进去就有）。
-              // 不传 selection，让 CodeMirror 自己把光标映射过去。
+              // 但**不能当场清**：打字时立刻 dispatch 会打断输入法合成，实测表现是
+              // 「打一个首字母，它被重复写一遍留在那儿」。所以延后到你停顿下来再清，
+              // 而且清之前再确认一次（停顿时可能已经在别的行、或者这行又变空了）。
               if (hasZwsp) {
-                const zIdx = cur.text.indexOf('\u200B');
-                const from = cur.from + zIdx;
-                view.dispatch({ changes: { from, to: from + 1, insert: '' }, scrollIntoView: false });
+                if (self.zwspTimer) clearTimeout(self.zwspTimer);
+                self.zwspTimer = setTimeout(() => {
+                  self.zwspTimer = null;
+                  try {
+                    if (view.composing) return;                    // 还在合成，别动
+                    const st2 = view.state;
+                    const cur2 = st2.doc.lineAt(st2.selection.main.head);
+                    if (cur2.number !== cur.number) return;        // 光标已经走开
+                    const m2 = cur2.text.match(/^(#{2,6}\s+|>\s?)/);
+                    if (!m2) return;
+                    if (!cur2.text.slice(m2[1].length).replace(/\u200B/g, '')) return; // 又空了，留着占位
+                    const zIdx = cur2.text.indexOf('\u200B');
+                    if (zIdx < 0) return;
+                    const from = cur2.from + zIdx;
+                    view.dispatch({ changes: { from, to: from + 1, insert: '' }, scrollIntoView: false });
+                  } catch (e) { /* 清理失败不影响编辑 */ }
+                }, 300);
                 return;
               }
               // 有正文时，把光标从标记内部挪到正文开头
@@ -445,6 +500,17 @@ module.exports = class ScriptZhPlugin extends Plugin {
               }
             } catch (e) { /* 归一化失败不影响其它功能 */ }
           }, 0);
+        }
+
+        // ---------- ③ 打字机滚动：把光标拉回视觉舒适区 ----------
+        // 打字时如果光标掉到屏幕中线下太多，就把视图往下带，让正在写的那一行
+        // 始终停在屏幕中上部——不用写到底部才发现看不见自己在写什么。
+        // 只在**内容变化**时触发：光标纯移动（点选、翻页）不抢滚动条。
+        if (u.docChanged && self.settings.typewriter !== false && !u.view.composing) {
+          const v2 = u.view;
+          const go = () => self.centerCaret(v2);
+          requestAnimationFrame(go);
+          setTimeout(go, 60);          // 排版晚一帧时兜底（跟角标同款处理）
         }
 
         // ---------- ② 该不该弹气泡 ----------
@@ -490,7 +556,7 @@ module.exports = class ScriptZhPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({ pandocPath: DEFAULT_PANDOC, lang: 'auto' }, await this.loadData());
+    this.settings = Object.assign({ pandocPath: DEFAULT_PANDOC, refDocPath: '', typewriter: true, lang: 'auto' }, await this.loadData());
   }
   async saveSettings() { await this.saveData(this.settings); }
 
@@ -752,10 +818,52 @@ module.exports = class ScriptZhPlugin extends Plugin {
     this.showBadge(label, 'mouse', at);
   }
 
+  // ---------- 打字机滚动 ----------
+  // 光标在滚动容器里的纵向位置超过「舒适区中心 + 容差」就把视图带过去，
+  // 让它回到舒适区中心。舒适区默认取容器高度的 45%，上下各留 12% 不动，
+  // 这样小幅移动不会抖。
+  centerCaret(view) {
+    try {
+      if (!view || !view.scrollDOM) return;
+      const sc = view.scrollDOM;
+      const head = view.state.selection.main.head;
+      const c = view.coordsAtPos(head);
+      if (!c) return;
+      const r = sc.getBoundingClientRect();
+      if (r.height < 40) return;
+      const y = c.top - r.top;                       // 光标相对滚动容器顶部的距离
+      // 标准打字机模式：把正在写的那一行钉在屏幕偏上三分之一处，
+      // 下方留出约 2/3 的预览空间，写的时候能一直看到后面几行。
+      const anchor = r.height * 0.35;                // 停靠线：从上往下 35%
+      const band = r.height * 0.08;                  // 容差：这条线上下各 8% 内不动，免得抖
+      if (y > anchor + band) sc.scrollTop += Math.round(y - anchor);
+      else if (y < anchor - band) sc.scrollTop += Math.round(y - anchor);
+    } catch (e) { /* 量不到就算了，不影响打字 */ }
+  }
+
   // ---------- 导出 ----------
   openExport() { new ExportModal(this).open(); }
 
-  async doExport(ext) {
+  // 导出的 Markdown 必须先「一行一块」：剧本是一行一个元素，但 Markdown 里
+  // 相邻的行属于**同一个段落**，直接喂给 pandoc 会把 #### 角色 当成正文里的一段文字。
+  // 所以导出前去掉空行、每块之间补一个空行。
+  normalizeForExport(raw) {
+    const lines = String(raw).split(/\r?\n/).map((s) => s.replace(/\s+$/, '')).filter((s) => s.trim().length > 0);
+    // 不像剧本（没有两行以上带标记的）就别动，按原样导出
+    const marked = lines.filter((s) => /^\s*(#{2,6}\s|>\s?)/.test(s)).length;
+    if (marked < 2) return String(raw);
+    return lines.map((s) => s.trim()).join('\n\n') + '\n';
+  }
+
+  // 剧本样式模板：让 pandoc 把各级标题 / 引用块映射成剧本排版
+  refDocPath() {
+    const p = (this.settings.refDocPath || '').trim();
+    if (p && fs.existsSync(p)) return p;
+    const builtin = path.join(this.manifest.dir || '', 'screenplay-ref.docx');
+    return fs.existsSync(builtin) ? builtin : '';
+  }
+
+  async doExport(ext, chosenPath) {
     const file = this.app.workspace.getActiveFile();
     if (!file) { new Notice(t('notice.openFirst')); return; }
     if (ext === 'pdf') {
@@ -769,23 +877,55 @@ module.exports = class ScriptZhPlugin extends Plugin {
     if (!pandoc || !fs.existsSync(pandoc)) { new Notice(t('notice.noPandoc', pandoc)); return; }
 
     // 导出前清掉空行占位用的零宽空格，避免漏进 Word / HTML / 纯文本
-    const text = (await this.app.vault.read(file)).replace(/\u200B/g, '');
+    const text = this.normalizeForExport((await this.app.vault.read(file)).replace(/\u200B/g, ''));
     const tmp = this.tmpFile('.md');
     const dir = path.join(this.vaultBase(), path.dirname(file.path));
     const base = path.basename(file.path, path.extname(file.path));
-    const target = path.join(dir, base + ext);
+    // 用户在导出弹窗里指定了位置就用它，否则跟在笔记旁边
+    const target = (chosenPath && chosenPath.trim()) ? chosenPath.trim() : path.join(dir, base + ext);
 
     fs.writeFileSync(tmp, text, 'utf8');
-    const args = [tmp, '--from', 'markdown'];
-    if (ext === '.docx') args.push('--to', 'docx');
-    else if (ext === '.html') args.push('--to', 'html5', '--standalone', '--metadata', 'charset=utf-8');
-    else args.push('--to', 'plain');
-    args.push('-o', target);
+    const head = [tmp, '--from', 'markdown'];
+    if (ext === '.docx') {
+      head.push('--to', 'docx');
+      // 有剧本样式模板就带上，场景/角色/台词才会是剧本的样子而不是默认公文
+      const ref = this.refDocPath();
+      if (ref) head.push('--reference-doc=' + ref);
+    } else if (ext === '.html') head.push('--to', 'html5', '--standalone', '--metadata', 'charset=utf-8');
+    else head.push('--to', 'plain');
 
-    execFile(pandoc, args, { timeout: 60000 }, (err) => {
-      try { fs.unlinkSync(tmp); } catch (e) {}
-      if (err) { new Notice(t('notice.exportFailed', err.message.split('\n')[0])); return; }
-      new Notice(t('notice.exported', target), 6000);
+    const firstErr = (err, se) => {
+      const d = String(se || (err && err.stderr) || '').trim().split('\n').map((s) => s.trim()).filter(Boolean)[0];
+      return d || String((err && err.message) || '').split('\n')[0];
+    };
+
+    // 先直接写目标文件；不行再退一步：让 pandoc 写到系统临时目录，
+    // 由 Obsidian 自己把字节搬进库里。
+    // 需要这一步的原因：实测有些环境下 pandoc 被拦在库目录之外（报
+    // "withBinaryFile: permission denied"），只有 Obsidian 自己的进程能写库。
+    const run = (out, cb) => execFile(pandoc, head.concat(['-o', out]), { timeout: 60000 }, (err, so, se) => cb(err, se));
+
+    run(target, (err, se) => {
+      if (!err) {
+        try { fs.unlinkSync(tmp); } catch (e) {}
+        new Notice(t('notice.exported', target), 6000);
+        return;
+      }
+      const alt = path.join(require('os').tmpdir(), 'script-zh-' + Date.now() + ext);
+      run(alt, (err2, se2) => {
+        try { fs.unlinkSync(tmp); } catch (e) {}
+        if (err2) {
+          new Notice(t('notice.exportFailed', firstErr(err2, se2) || firstErr(err, se)), 12000);
+          return;
+        }
+        try {
+          fs.copyFileSync(alt, target);
+          fs.unlinkSync(alt);
+          new Notice(t('notice.exported', target), 6000);
+        } catch (e) {
+          new Notice(t('notice.exportFailed', String(e.message || e)), 12000);
+        }
+      });
     });
   }
 
@@ -806,26 +946,76 @@ module.exports = class ScriptZhPlugin extends Plugin {
 class ExportModal extends Modal {
   constructor(plugin) { super(plugin.app); this.plugin = plugin; }
 
+  // 试着叫系统「另存为」窗口；拿不到就只靠下面那个路径框手填
+  async pickPath(input, ext) {
+    try {
+      let remote = null;
+      try { remote = require('electron').remote; } catch (e) {}
+      if (!remote) { try { remote = require('@electron/remote'); } catch (e) {} }
+      if (!remote || !remote.dialog) { new Notice(t('modal.noDialog')); return; }
+      const filters = ext === '.html'
+        ? [{ name: 'HTML', extensions: ['html'] }]
+        : ext === '.txt'
+          ? [{ name: 'Text', extensions: ['txt'] }]
+          : [{ name: 'Word', extensions: ['docx'] }];
+      const res = await remote.dialog.showSaveDialog({
+        title: t('modal.destTitle'),
+        defaultPath: input.value,
+        filters,
+        properties: ['createDirectory', 'showOverwriteConfirmation']
+      });
+      if (res && !res.canceled && res.filePath) input.value = res.filePath;
+    } catch (e) {
+      new Notice(t('modal.noDialog'));
+    }
+  }
+
   onOpen() {
     const { contentEl } = this;
     const file = this.plugin.app.workspace.getActiveFile();
     contentEl.createEl('h3', { text: t('modal.exportTitle') });
     contentEl.createEl('p', { text: file ? t('modal.source', file.path) : t('modal.noNote') });
 
-    const mk = (label, desc, fn) => {
+    // 默认位置：笔记旁边、同名 .docx
+    const base = this.plugin.vaultBase();
+    const dirPath = file ? path.join(base, path.dirname(file.path)) : base;
+    const stem = file ? path.basename(file.path, path.extname(file.path)) : t('default.importName');
+    const defaultPath = path.join(dirPath, stem + '.docx');
+
+    contentEl.createEl('div', { text: t('modal.dest'), cls: 'setting-item-name' });
+    const row = contentEl.createDiv();
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;margin:4px 0 14px;';
+    const input = row.createEl('input', { type: 'text' });
+    input.value = defaultPath;
+    input.style.cssText = 'flex:1;min-width:0;padding:6px 8px;';
+    const browse = row.createEl('button', { text: t('modal.browse') });
+    browse.onclick = () => this.pickPath(input, '.docx');
+    const hint = contentEl.createEl('div', { text: t('modal.destHint'), cls: 'setting-item-description' });
+    hint.style.marginTop = '-8px';
+
+    const withExt = (p, ext) => {
+      const s = String(p || '').trim();
+      if (!s) return '';
+      const cur = path.extname(s);
+      return cur ? s.slice(0, -cur.length) + ext : s + ext;
+    };
+
+    const mk = (label, desc, ext) => {
       const b = contentEl.createEl('button', { text: label });
       b.style.cssText = 'display:block;width:100%;text-align:left;margin:4px 0;padding:10px 12px;cursor:pointer;';
-      b.onclick = () => { this.close(); fn(); };
+      b.onclick = () => {
+        const chosen = ext === 'pdf' ? null : withExt(input.value, ext);
+        this.close();
+        this.plugin.doExport(ext, chosen);
+      };
       const d = contentEl.createEl('div', { text: desc });
       d.style.cssText = 'font-size:12px;opacity:0.65;margin:-2px 0 8px 2px;';
     };
 
-    mk(t('fmt.docx'), t('fmt.docxDesc'), () => this.plugin.doExport('.docx'));
-    mk(t('fmt.pdf'), t('fmt.pdfDesc'), () => this.plugin.doExport('pdf'));
-    mk(t('fmt.html'), t('fmt.htmlDesc'), () => this.plugin.doExport('.html'));
-    mk(t('fmt.txt'), t('fmt.txtDesc'), () => this.plugin.doExport('.txt'));
-
-    contentEl.createEl('p', { text: t('modal.sameFolder'), cls: 'setting-item-description' });
+    mk(t('fmt.docx'), t('fmt.docxDesc'), '.docx');
+    mk(t('fmt.pdf'), t('fmt.pdfDesc'), 'pdf');
+    mk(t('fmt.html'), t('fmt.htmlDesc'), '.html');
+    mk(t('fmt.txt'), t('fmt.txtDesc'), '.txt');
   }
 
   onClose() { this.contentEl.empty(); }
@@ -917,5 +1107,20 @@ class ScriptZhSettingTab extends PluginSettingTab {
           else new Notice('OK：' + String(stdout).split('\n')[0]);
         });
       }));
+
+    new Setting(containerEl)
+      .setName(t('settings.typewriter'))
+      .setDesc(t('settings.typewriterDesc'))
+      .addToggle((tg) => tg
+        .setValue(this.plugin.settings.typewriter !== false)
+        .onChange(async (v) => { this.plugin.settings.typewriter = v; await this.plugin.saveSettings(); }));
+
+    new Setting(containerEl)
+      .setName(t('settings.refDoc'))
+      .setDesc(t('settings.refDocDesc'))
+      .addText((x) => x
+        .setPlaceholder(t('settings.refDocPh'))
+        .setValue(this.plugin.settings.refDocPath || '')
+        .onChange(async (v) => { this.plugin.settings.refDocPath = v.trim(); await this.plugin.saveSettings(); }));
   }
 }
