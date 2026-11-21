@@ -295,7 +295,8 @@ module.exports = class ScriptZhPlugin extends Plugin {
     this.hideTimer = null;
     this.mouseMs = 1700;          // 悬停：跟着鼠标显示多久（原 1200，全体 +0.5s）
     this.caretMs = 2500;          // Tab 切完类型：跟着插入点显示多久（原 2000）
-    this.clickMs = 1200;          // 点击 / 回车换行：跟着插入点显示多久（1.5s 实测偏长，收到 1.2s）
+    this.clickMs = 1000;          // 点击 / 回车换行：跟着插入点显示多久。
+                                  // 修掉"鼠标路过空白处就提前收掉"之后，这个数字才等于实际观感，所以取 1 秒。
     this.lastPointerDown = 0;     // 最近一次按下指针的时间：用来区分"点击"和"打字/程序改选"
     this.lastDownX = -1;
     this.lastDownY = -1;
@@ -321,6 +322,35 @@ module.exports = class ScriptZhPlugin extends Plugin {
       this.registerEditorExtension(Prec.highest(keymap.of([
         { key: 'Tab', run: () => { self.cycle(1); return true; } },
         { key: 'Shift-Tab', run: () => { self.cycle(-1); return true; } },
+        // 退格撞到隐藏标记时，一次删掉整个标记。
+        // 原因：整行只剩井号（健如 "##"、"#"）时，Obsidian 把它当「空标题」渲染，
+        // 那个位置的光标 Chromium 不画——实测四种 CSS（width 0 / auto / 0.35em /
+        // 去掉 height）全部无效，只能绕开这个状态，不要停在里面。
+        { key: 'Backspace', run: (view) => {
+          const sel = view.state.selection.main;
+          if (!sel.empty) return false;
+          const line = view.state.doc.lineAt(sel.head);
+          const t = line.text;
+          const bare = t.replace(/\u200B/g, '');
+          // ① 整行只剩标记（可有空格、可带占位符）：一次删干净。
+          //    必须一次删完，否则会在 "##" / "#" 这种空标题上停住——
+          //    实测那个位置 Chromium 不画光标（四种 CSS 宽度都无效）。
+          //    这也是占位符方案能用的前提：不给你机会"退到只剩占位符"。
+          if (bare.length > 0 && /^(#{1,6}\s*|>\s*)$/.test(bare) && sel.head === line.to) {
+            view.dispatch({ changes: { from: line.from, to: line.to, insert: '' }, selection: { anchor: line.from }, scrollIntoView: false });
+            return true;
+          }
+          // ② 光标紧贴标记末尾（如 "## 1. 内景" 的第 3 列）：一次删掉整个标记
+          const m = t.match(/^(#{2,6}\s+|>\s?)/);
+          if (m) {
+            const prefixEnd = line.from + m[1].length;
+            if (sel.head === prefixEnd) {
+              view.dispatch({ changes: { from: line.from, to: prefixEnd, insert: '' }, selection: { anchor: line.from }, scrollIntoView: false });
+              return true;
+            }
+          }
+          return false;
+        } },
       ])));
       hooked = true;
     } catch (e) { console.warn('[script-zh] CM6 不可用', e); }
@@ -340,7 +370,10 @@ module.exports = class ScriptZhPlugin extends Plugin {
       this.registerEditorExtension(EditorView.updateListener.of((u) => {
         if (!u.selectionSet && !u.docChanged) return;
 
-        // ② 这次事务里有没有插入换行符（回车 / Shift+回车 / 粘贴多行都算）
+        // ---------- ⓪ 先把触发条件算出来（下面两段都要用）----------
+        // 触发条件：鼠标点击，或者这次事务动了换行符——
+        //   插入换行（回车 / Shift+回车 / 粘贴多行）
+        //   删除换行（退格把两行并成一行）← 原先漏了，表现为「退格退到上一行没有气泡」
         let insertedNewline = false;
         if (u.docChanged) {
           try {
@@ -352,10 +385,58 @@ module.exports = class ScriptZhPlugin extends Plugin {
             });
           } catch (e) { /* iterChanges 不可用就退化为只认点击 */ }
         }
-
-        // ① 500ms 内按下过指针，算鼠标点击
+        const mergedLines = u.docChanged && u.state.doc.lines < u.startState.doc.lines;
+        const touchedBreak = insertedNewline || mergedLines;
         const clicked = Date.now() - self.lastPointerDown <= 500;
-        if (!clicked && !insertedNewline) return;
+
+        // ---------- ① 光标归一化（任何改动 / 光标移动都做，与气泡无关） ----------
+        // 标记是零宽的，点击或退格之后光标很容易停在标记内部或标记后的边界上，
+        // 那里接着打字会插到 "#### " 前面，把这一行的类型弄坏；
+        // 行里只剩标记时那个位置连行高都没有，caret 根本画不出来。
+        const view = u.view;
+        const selNow = u.state.selection.main;
+        if (selNow.empty) {
+          const lineNo = u.state.doc.lineAt(selNow.head).number;
+          setTimeout(() => {
+            try {
+              const st = view.state;
+              const sel = st.selection.main;
+              if (!sel.empty) return;                       // 有选区就别动
+              const cur = st.doc.lineAt(sel.head);
+              if (cur.number !== lineNo) return;            // 光标已经走开，别追着改
+              const m = cur.text.match(/^(#{2,6}\s+|>\s?)/);
+              if (!m) return;                               // 不是带标记的行
+              const prefixEnd = cur.from + m[1].length;
+              const rest = cur.text.slice(m[1].length);
+              const body = rest.replace(/\u200B/g, '');
+              const hasZwsp = rest.indexOf('\u200B') >= 0;
+              // 正文为空（整行只剩标记）时必须给这一行一个真实字符：Obsidian 重绘
+              // 这一行之后，纯标记行的光标就不再绘制了（实测：点完立刻拍能拍到，
+              // 等 1.4 秒再拍就没了——用户说的「跳一下就没了」就是它）。
+              // 只在「点击 / 换行进入」时补，不在退格过程中补，免得和删除打架；
+              // 而退格遇到只剩标记的行会被下面的智能退格一次删干净，不会停在这里。
+              if (!body) {
+                if (!hasZwsp && (clicked || touchedBreak)) {
+                  view.dispatch({
+                    changes: { from: cur.to, insert: '\u200B' },
+                    selection: { anchor: cur.to + 1 },
+                    scrollIntoView: false
+                  });
+                } else if (hasZwsp && sel.head !== cur.to) {
+                  view.dispatch({ selection: { anchor: cur.to }, scrollIntoView: false });
+                }
+                return;
+              }
+              // 有正文时，把光标从标记内部挪到正文开头
+              if (sel.head <= prefixEnd) {
+                view.dispatch({ selection: { anchor: prefixEnd }, scrollIntoView: false });
+              }
+            } catch (e) { /* 归一化失败不影响其它功能 */ }
+          }, 0);
+        }
+
+        // ---------- ② 该不该弹气泡 ----------
+        if (!clicked && !touchedBreak) return;
         if (!u.selectionSet) return;
 
         const head = u.state.selection.main.head;
@@ -448,8 +529,10 @@ module.exports = class ScriptZhPlugin extends Plugin {
       pre = '（'; suf = '）';      // 说明（情绪/动作提示）用全角括号包起来
     }
 
-    // 正文为空时在包装符**内部**补一个零宽空格：既让原生 caret 有字符可依，
-    // 又保证光标停在里面，接着打字不会跑到引号/括号外面。
+    // 正文为空时在标记后面补一个零宽空格：整行只剩标记时，Obsidian 重绘这一行
+    // 之后光标就不再绘制了（用户说的「Tab 切完类型丢光标」就是这个）。
+    // 曾经因为「退格退不掉占位符」把它删掉过——现在智能退格会在光标贴着标记时
+    // 一次删掉整个标记，不会再卡住，所以可以安全地补回来。
     const filler = body ? '' : '\u200B';
     const newLine = prefix + pre + body + filler + suf;
     const caret = newLine.length - suf.length;
@@ -605,8 +688,15 @@ module.exports = class ScriptZhPlugin extends Plugin {
         Math.abs(e.clientY - this.lastDownY) < 3) {
       return;
     }
+
+    // 插入点气泡（点击 / 回车 / Tab 切类型）有自己的时长，不该被"鼠标路过空白处"提前打断。
+    // 只有真正悬停到某一行上，才把气泡所有权接过去。
+    const miss = () => {
+      if (this.badgeAnchor !== 'caret') this.hideBadge();
+    };
+
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!view) return this.hideBadge();
+    if (!view) return miss();
     const at = { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY };
 
     const el = document.elementFromPoint(e.clientX, e.clientY);
@@ -617,20 +707,20 @@ module.exports = class ScriptZhPlugin extends Plugin {
     }
 
     const cmDom = view.containerEl.querySelector('.cm-editor');
-    if (!cmDom) return this.hideBadge();
-    if (!el || !cmDom.contains(el)) return this.hideBadge();
+    if (!cmDom) return miss();
+    if (!el || !cmDom.contains(el)) return miss();
 
     // 必须真的落在某一行的行框里（行间空隙、右边空白、空白区域都不算）
     const lineEl = el.closest('.cm-line');
-    if (!lineEl) return this.hideBadge();
+    if (!lineEl) return miss();
     const lrect = lineEl.getBoundingClientRect();
-    if (e.clientY < lrect.top - 1 || e.clientY > lrect.bottom + 1) return this.hideBadge();
+    if (e.clientY < lrect.top - 1 || e.clientY > lrect.bottom + 1) return miss();
 
     const cm = view.editor && view.editor.cm;
-    if (!cm || typeof cm.posAtCoords !== 'function') return this.hideBadge();
+    if (!cm || typeof cm.posAtCoords !== 'function') return miss();
 
     const pos = cm.posAtCoords({ x: e.clientX, y: e.clientY });
-    if (pos == null) return this.hideBadge();
+    if (pos == null) return miss();
 
     const line = cm.state.doc.lineAt(pos);
     const raw = line.text.trim();

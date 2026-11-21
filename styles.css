@@ -186,6 +186,36 @@
   padding-left: 0.2em !important;
 }
 
+/* ===== 2026-11-21 光标修复③（定案）：隐藏标记改用绝对定位 =====
+   演进过程（都是实测，别再改回去）：
+     ① font-size:0 / line-height:0 → 标记零宽零高。点行尾时点击位置解析进标记
+        内部，那里行高是 0，浏览器不画光标。
+     ② inline-block + width:0 + height:1.5em → 有了高度，但「标记末尾 / 正文开头」
+        那一列成了死区：逐像素点击实测，行首 +0px ~ +8px 全落在该列且都不画，
+        +12px 起才正常；而且行高被撑到 40px。
+     ③ 绝对定位（本条）→ 标记完全移出文档流，那一段不再有零宽盒，
+        分界列恢复正常绘制，行高回到 24px。实测角色/台词/场景三种行首点击全部 ✓。
+
+   要点：不要再用 width:0 的 inline-block 隐藏标记；零宽盒的边界就是死区。 */
+.markdown-source-view.mod-cm6 .cm-formatting-header,
+.markdown-source-view.mod-cm6 .cm-formatting-header-1,
+.markdown-source-view.mod-cm6 .cm-formatting-header-2,
+.markdown-source-view.mod-cm6 .cm-formatting-header-3,
+.markdown-source-view.mod-cm6 .cm-formatting-header-4,
+.markdown-source-view.mod-cm6 .cm-formatting-header-5,
+.markdown-source-view.mod-cm6 .cm-formatting-header-6,
+.markdown-source-view.mod-cm6 .cm-formatting-quote,
+.markdown-source-view.mod-cm6 .cm-formatting-quote-1 {
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  font-size: 1em !important;
+  line-height: 1.5 !important;
+  letter-spacing: 0 !important;
+}
+
 /* ===== 2026-11-21：源码视图的「台词」补齐缩进 =====
    阅读视图里 blockquote 有 padding-left: 2.2em，但源码视图那套规则把底色 /
    左边框 / 伪元素全抹平了又没给内距，于是「台词」和「动作」在编辑器里长得
